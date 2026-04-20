@@ -2,8 +2,8 @@
   "manifest_version": "0.2",
   "name": "ninjaone-rmm",
   "display_name": "NinjaONE RMM Server",
-  "version": "1.2.14",
-  "description": "Professional MCP server for NinjaONE RMM platform with comprehensive device management, monitoring, patch management, and automation capabilities",
+  "version": "1.3.0",
+  "description": "Professional MCP server for NinjaONE RMM platform with comprehensive device management, ticketing, documentation, monitoring, patch management, script execution, and automation capabilities",
   "author": {
     "name": "Lungshot",
     "email": "support@ninjaone-mcp.dev",
@@ -27,6 +27,11 @@
         "NINJA_BASE_URL": "${user_config.base_url}",
         "NINJA_CLIENT_ID": "${user_config.client_id}",
         "NINJA_CLIENT_SECRET": "${user_config.client_secret}",
+        "NINJA_AUTH_MODE": "${user_config.auth_mode}",
+        "NINJA_OAUTH_REDIRECT_URI": "${user_config.redirect_uri}",
+        "NINJA_OAUTH_PORT": "${user_config.oauth_port}",
+        "NINJA_OAUTH_SCOPES": "${user_config.scopes}",
+        "NINJA_TOKEN_DIR": "${user_config.token_dir}",
         "LOG_LEVEL": "${user_config.log_level}",
         "NODE_ENV": "production"
       }
@@ -39,6 +44,12 @@
       "description": "Your NinjaONE regional API endpoint (e.g., https://app.ninjarmm.com, https://eu.ninjarmm.com)",
       "default": "https://app.ninjarmm.com"
     },
+    "auth_mode": {
+      "type": "string",
+      "title": "Auth Mode",
+      "description": "OAuth2 flow to use. 'client_credentials' is the default (service-to-service). 'authorization_code' enables browser login and is REQUIRED for running scripts.",
+      "default": "client_credentials"
+    },
     "client_id": {
       "type": "string",
       "title": "OAuth Client ID",
@@ -47,8 +58,32 @@
     "client_secret": {
       "type": "string",
       "title": "OAuth Client Secret",
-      "description": "Your NinjaONE OAuth2 application client secret",
+      "description": "Your NinjaONE OAuth2 application client secret. Required for client_credentials; optional for authorization_code with PKCE (public clients).",
       "sensitive": true
+    },
+    "redirect_uri": {
+      "type": "string",
+      "title": "OAuth Redirect URI",
+      "description": "Redirect URI registered in your NinjaONE OAuth app (authorization_code flow). Must match exactly. Default uses loopback.",
+      "default": "http://localhost:8765/callback"
+    },
+    "oauth_port": {
+      "type": "string",
+      "title": "OAuth Loopback Port",
+      "description": "Local TCP port used by the loopback callback server during authorization_code login.",
+      "default": "8765"
+    },
+    "scopes": {
+      "type": "string",
+      "title": "OAuth Scopes",
+      "description": "Space-separated scopes. For authorization_code include 'offline_access' to receive a refresh token.",
+      "default": "monitoring management control offline_access"
+    },
+    "token_dir": {
+      "type": "string",
+      "title": "Token Storage Directory",
+      "description": "Directory where refresh/access tokens are persisted (permissions 0600). Defaults to ~/.ninjaone-mcp.",
+      "default": ""
     },
     "log_level": {
       "type": "string",

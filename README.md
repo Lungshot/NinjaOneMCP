@@ -98,10 +98,59 @@ NINJA_BASE_URL=https://app.ninjarmm.com
 # NINJA_REGION=eu
 # Optional: override auto-detect candidates
 # NINJA_BASE_URLS=https://app.ninjarmm.com,https://eu.ninjarmm.com
+
+# Auth mode: client_credentials (default) or authorization_code
+# NINJA_AUTH_MODE=authorization_code
+# NINJA_OAUTH_REDIRECT_URI=http://localhost:8765/callback
+# NINJA_OAUTH_PORT=8765
+# NINJA_OAUTH_SCOPES=monitoring management control offline_access
+# NINJA_TOKEN_DIR=
+
 MCP_MODE=stdio
 HTTP_PORT=3000
 SSE_PORT=3001
 ```
+
+## Authentication
+
+Two OAuth2 flows are supported and can be switched via `NINJA_AUTH_MODE`:
+
+### 1. Client Credentials (default)
+Service-to-service. Works for most read/write operations (devices, orgs, alerts,
+tickets, documentation, webhooks, custom fields, etc.).
+
+```env
+NINJA_AUTH_MODE=client_credentials
+NINJA_CLIENT_ID=...
+NINJA_CLIENT_SECRET=...
+```
+
+### 2. Authorization Code (web auth)
+User-context flow with browser login and refresh tokens. **Required** for
+endpoints that must run in a user context, most notably running scripts on
+devices (`run_device_script`).
+
+1. In NinjaOne admin → **Apps → API → Client App IDs**, register your app with
+   **authorization_code** grant enabled and add a redirect URI that matches
+   `NINJA_OAUTH_REDIRECT_URI` (default `http://localhost:8765/callback`).
+2. Set:
+   ```env
+   NINJA_AUTH_MODE=authorization_code
+   NINJA_CLIENT_ID=...
+   # NINJA_CLIENT_SECRET only needed for confidential clients
+   NINJA_OAUTH_SCOPES=monitoring management control offline_access
+   ```
+3. From the MCP client, call the `ninja_auth_login` tool. The MCP will:
+   - Open your browser to the NinjaOne authorize URL.
+   - Listen on the loopback port for the callback with PKCE verification.
+   - Store the refresh token under `~/.ninjaone-mcp/tokens.json` (mode `0600`).
+4. If the loopback cannot receive the callback (e.g. headless server, blocked
+   port), call `ninja_auth_login` with `{ "manual": true }` and paste the full
+   redirect URL into `ninja_auth_paste_redirect`.
+5. Use `ninja_auth_status` to inspect token state and `ninja_auth_logout` to
+   clear stored tokens.
+
+PKCE (S256) is always enabled — no additional configuration required.
 
 ### Build and Run
 
@@ -221,8 +270,10 @@ The NinjaOne Public API has the following known limitations:
 - **Update Phone**: The phone field can be set during creation but cannot be updated afterwards
 
 ### Other Restrictions
-- **Script Execution**: Running scripts requires authorization code flow, not supported with client credentials
-- All other CRUD operations work as expected
+- **Script Execution**: Running scripts (`run_device_script`) requires the
+  `authorization_code` flow. Set `NINJA_AUTH_MODE=authorization_code` and run
+  `ninja_auth_login`. See the **Authentication** section above.
+- All other CRUD operations work with either flow.
 
 ## MCP Integration
 
@@ -264,9 +315,21 @@ Build first so `dist/index.js` exists: `npm install && npm run build`. Then rest
 
 ### Available Tools
 
-The server provides 29+ tools covering all major NinjaONE operations:
+The server provides 55+ tools covering all major NinjaONE operations:
 
-**Device Tools**: `get_devices`, `get_device`, `reboot_device`, `get_device_activities`, `get_device_software`, `search_devices_by_name`, `find_windows11_devices`
+**Auth Tools** (for `authorization_code` flow): `ninja_auth_status`, `ninja_auth_login`, `ninja_auth_paste_redirect`, `ninja_auth_logout`
+
+**Device Tools**: `get_devices`, `get_device`, `reboot_device`, `get_device_activities`, `get_device_software`, `search_devices_by_name`, `find_windows11_devices`, `get_device_custom_fields`, `update_device_custom_fields`
+
+**Ticketing Tools**: `get_tickets`, `get_ticket`, `create_ticket`, `update_ticket`, `get_ticket_log_entries`, `add_ticket_log_entry`, `get_ticketing_attributes`, `get_ticketing_contacts`
+
+**Script Tools** (requires authorization_code): `get_device_scripting_options`, `run_device_script`, `get_job_status`
+
+**Documentation Tools**: `get_document_templates`, `get_document_template`, `create_document_template`, `update_document_template`, `get_organization_documents`, `create_organization_document`, `update_organization_document`
+
+**Webhook Tools**: `set_webhook`, `delete_webhook`
+
+**Attachment Tools**: `get_attachment`
 
 #### Device Software Inventory Tool
 
@@ -285,7 +348,7 @@ The server provides 29+ tools covering all major NinjaONE operations:
 
 **Custom Fields & Policy Query Tools**: `query_custom_fields`, `query_custom_fields_detailed`, `query_scoped_custom_fields`, `query_scoped_custom_fields_detailed`, `query_policy_overrides`
 
-**Backup Query Tools**: `query_backup_usage`
+**Backup Query Tools**: `query_backup_usage`, `query_backup_jobs`, `query_backup_integrity`
 
 ## Region and Base URL
 

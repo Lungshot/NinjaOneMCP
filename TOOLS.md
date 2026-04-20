@@ -382,6 +382,47 @@ The current implementation includes core tools. A full implementation would incl
 
 And many more covering all aspects of the NinjaONE platform.
 
+### Authentication (authorization_code flow)
+- `ninja_auth_status` — show auth mode, token expiry, refresh-token state.
+- `ninja_auth_login` — start browser login; returns `authorizeUrl`. Pass
+  `{ "manual": true }` to skip loopback and only return the URL.
+- `ninja_auth_paste_redirect` — complete login by pasting the full redirect
+  URL (contains `?code=...&state=...`). Required for headless/manual flows.
+- `ninja_auth_logout` — clear stored tokens (`~/.ninjaone-mcp/tokens.json`).
+
+### Ticketing
+- `get_tickets` — filter/paginate tickets.
+- `get_ticket`, `create_ticket`, `update_ticket`.
+- `get_ticket_log_entries`, `add_ticket_log_entry` — comments & activity.
+- `get_ticketing_attributes` — statuses/priorities/custom-field metadata.
+- `get_ticketing_contacts` — ticket contact directory.
+
+### Scripts (require `NINJA_AUTH_MODE=authorization_code`)
+- `get_device_scripting_options` — scripts/actions available on a device.
+- `run_device_script` — execute a script; payload follows NinjaOne spec
+  (`{ type, uid|id, parameters?, runAs? }`).
+- `get_job_status` — poll a job by UID.
+
+### NinjaOne Documentation
+- `get_document_templates`, `get_document_template`.
+- `create_document_template`, `update_document_template`.
+- `get_organization_documents`, `create_organization_document`,
+  `update_organization_document`.
+
+### Device Custom Fields
+- `get_device_custom_fields`, `update_device_custom_fields` (object of
+  `{ fieldName: value }`).
+
+### Webhooks
+- `set_webhook` (PUT), `delete_webhook`.
+
+### Attachments
+- `get_attachment` — returns `{ contentType, base64, size }`.
+
+### Backup (additions)
+- `query_backup_jobs`, `query_backup_integrity` — in addition to the existing
+  `query_backup_usage`.
+
 ## Support and Documentation
 
 For detailed API documentation, refer to:

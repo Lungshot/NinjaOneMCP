@@ -1,3 +1,16 @@
+import {
+  buildAuthorizeUrl,
+  createPkcePair,
+  createState,
+  exchangeCode,
+  refresh as refreshAccessToken,
+  parseRedirectUrl,
+  type PkcePair,
+  type TokenResponse,
+} from './auth/authorization-code.js';
+import { openBrowser, waitForCallback } from './auth/loopback.js';
+import * as tokenStore from './auth/token-store.js';
+
 type CreateEndUserPayload = {
   firstName: string;
   lastName: string;
@@ -12,14 +25,51 @@ export type MaintenanceWindowSelection =
   | { permanent: true }
   | { permanent: false; value: number; unit: MaintenanceUnit; seconds: number };
 
+export type AuthMode = 'client_credentials' | 'authorization_code';
+
+interface PendingLogin {
+  pkce: PkcePair;
+  state: string;
+  redirectUri: string;
+  scope: string;
+  baseUrl: string;
+}
+
+export interface AuthStatus {
+  mode: AuthMode;
+  configured: boolean;
+  tenantBaseUrl: string | null;
+  accessTokenValid: boolean;
+  accessTokenExpiresAt: number | null;
+  hasRefreshToken: boolean;
+  pendingLogin: boolean;
+  redirectUri: string | null;
+  scope: string | null;
+  tokenStorePath: string;
+}
+
+export interface LoginStartResult {
+  authorizeUrl: string;
+  redirectUri: string;
+  mode: 'loopback' | 'manual';
+  message: string;
+}
+
 export class NinjaOneAPI {
   private baseUrl: string | null = null;
   private clientId: string;
   private clientSecret: string;
   private accessToken: string | null = null;
   private tokenExpiry: number | null = null;
+  private refreshToken: string | null = null;
   private isConfigured: boolean;
   private baseUrlExplicit: boolean = false;
+  private authMode: AuthMode;
+  private redirectUri: string;
+  private oauthPort: number;
+  private scope: string;
+  private pendingLogin: PendingLogin | null = null;
+  private tokenLoadPromise: Promise<void> | null = null;
 
   private static readonly REGION_MAP: Record<string, string> = {
     us: 'https://app.ninjarmm.com',
@@ -37,6 +87,9 @@ export class NinjaOneAPI {
     'https://oc.ninjarmm.com',
   ];
 
+  private static readonly DEFAULT_CC_SCOPE = 'monitoring management control';
+  private static readonly DEFAULT_AC_SCOPE = 'monitoring management control offline_access';
+
   constructor() {
     const envBase = process.env.NINJA_BASE_URL;
     const envRegion = (process.env.NINJA_REGION || '').toLowerCase();
@@ -45,23 +98,263 @@ export class NinjaOneAPI {
       this.baseUrl = this.normalizeBaseUrl(envBase);
       this.baseUrlExplicit = true;
     } else if (envRegion && NinjaOneAPI.REGION_MAP[envRegion]) {
-      this.baseUrl = NinjaOneAPI.REGION_MAP[envRegion];
+      this.baseUrl = NinjaOneAPI.REGION_MAP[envRegion]!;
       this.baseUrlExplicit = true;
     } else {
       this.baseUrl = null;
     }
     this.clientId = process.env.NINJA_CLIENT_ID || '';
     this.clientSecret = process.env.NINJA_CLIENT_SECRET || '';
-    this.isConfigured = !!(this.clientId && this.clientSecret);
-    
-    if (!this.isConfigured) {
-      console.error('WARNING: NINJA_CLIENT_ID and NINJA_CLIENT_SECRET not set - API calls will fail until configured');
+
+    const modeEnv = (process.env.NINJA_AUTH_MODE || 'client_credentials').toLowerCase();
+    this.authMode = modeEnv === 'authorization_code' ? 'authorization_code' : 'client_credentials';
+
+    const portEnv = parseInt(process.env.NINJA_OAUTH_PORT || '', 10);
+    this.oauthPort = Number.isFinite(portEnv) && portEnv > 0 ? portEnv : 8765;
+    this.redirectUri = process.env.NINJA_OAUTH_REDIRECT_URI
+      || `http://localhost:${this.oauthPort}/callback`;
+    this.scope = process.env.NINJA_OAUTH_SCOPES
+      || (this.authMode === 'authorization_code'
+        ? NinjaOneAPI.DEFAULT_AC_SCOPE
+        : NinjaOneAPI.DEFAULT_CC_SCOPE);
+
+    if (this.authMode === 'authorization_code') {
+      this.isConfigured = !!this.clientId;
+      if (!this.isConfigured) {
+        console.error('WARNING: NINJA_CLIENT_ID not set - authorization_code flow cannot start until configured');
+      } else {
+        console.error(`NinjaONE API initialized (authorization_code flow, redirect=${this.redirectUri})`);
+      }
+      this.tokenLoadPromise = this.loadStoredTokens().catch((err) => {
+        console.error('[ninja-api] token load failed:', err);
+      });
     } else {
-      console.error('NinjaONE API initialized successfully');
+      this.isConfigured = !!(this.clientId && this.clientSecret);
+      if (!this.isConfigured) {
+        console.error('WARNING: NINJA_CLIENT_ID and NINJA_CLIENT_SECRET not set - API calls will fail until configured');
+      } else {
+        console.error('NinjaONE API initialized successfully (client_credentials flow)');
+      }
     }
   }
 
+  public getAuthMode(): AuthMode {
+    return this.authMode;
+  }
+
+  public async getAuthStatus(): Promise<AuthStatus> {
+    await this.ensureTokensLoaded();
+    return {
+      mode: this.authMode,
+      configured: this.isConfigured,
+      tenantBaseUrl: this.baseUrl,
+      accessTokenValid: !!(this.accessToken && this.tokenExpiry && Date.now() < this.tokenExpiry),
+      accessTokenExpiresAt: this.tokenExpiry,
+      hasRefreshToken: !!this.refreshToken,
+      pendingLogin: !!this.pendingLogin,
+      redirectUri: this.authMode === 'authorization_code' ? this.redirectUri : null,
+      scope: this.scope,
+      tokenStorePath: tokenStore.location(),
+    };
+  }
+
+  public async logout(): Promise<void> {
+    this.accessToken = null;
+    this.tokenExpiry = null;
+    this.refreshToken = null;
+    this.pendingLogin = null;
+    await tokenStore.clear();
+  }
+
+  public async startLogin(preferLoopback: boolean = true): Promise<LoginStartResult> {
+    if (this.authMode !== 'authorization_code') {
+      throw new Error('Login is only available when NINJA_AUTH_MODE=authorization_code');
+    }
+    if (!this.clientId) {
+      throw new Error('NINJA_CLIENT_ID is required to start login');
+    }
+
+    const base = await this.resolveBaseUrlForAuth();
+    const pkce = createPkcePair();
+    const state = createState();
+    const authorizeUrl = buildAuthorizeUrl({
+      baseUrl: base,
+      clientId: this.clientId,
+      redirectUri: this.redirectUri,
+      scope: this.scope,
+      state,
+      codeChallenge: pkce.challenge,
+    });
+
+    this.pendingLogin = {
+      pkce,
+      state,
+      redirectUri: this.redirectUri,
+      scope: this.scope,
+      baseUrl: base,
+    };
+
+    if (preferLoopback) {
+      this.runLoopbackFlow(authorizeUrl).catch((err) => {
+        console.error('[ninja-api] loopback login failed:', err);
+      });
+      return {
+        authorizeUrl,
+        redirectUri: this.redirectUri,
+        mode: 'loopback',
+        message: `Open the URL in your browser if it does not launch automatically. After you log in, the flow completes via ${this.redirectUri}. If the loopback cannot receive the callback, call ninja_auth_paste_redirect with the full redirect URL.`,
+      };
+    }
+
+    return {
+      authorizeUrl,
+      redirectUri: this.redirectUri,
+      mode: 'manual',
+      message: `Open the URL in your browser, complete the login, and paste the FULL redirect URL (including ?code=...&state=...) into ninja_auth_paste_redirect.`,
+    };
+  }
+
+  public async completeLoginFromRedirect(redirectUrl: string): Promise<void> {
+    if (!this.pendingLogin) {
+      throw new Error('No pending login — call ninja_auth_login first.');
+    }
+    const parsed = parseRedirectUrl(redirectUrl);
+    if (parsed.error) {
+      throw new Error(`OAuth error from provider: ${parsed.error}`);
+    }
+    if (!parsed.code || !parsed.state) {
+      throw new Error('Redirect URL is missing code or state parameter.');
+    }
+    if (parsed.state !== this.pendingLogin.state) {
+      throw new Error('State mismatch — possible CSRF. Restart the login.');
+    }
+    await this.completeLoginWithCode(parsed.code);
+  }
+
+  private async runLoopbackFlow(authorizeUrl: string): Promise<void> {
+    if (!this.pendingLogin) return;
+    openBrowser(authorizeUrl);
+    try {
+      const result = await waitForCallback({
+        redirectUri: this.pendingLogin.redirectUri,
+        expectedState: this.pendingLogin.state,
+        timeoutMs: 180_000,
+      });
+      await this.completeLoginWithCode(result.code);
+      console.error('[ninja-api] login completed via loopback callback');
+    } catch (err) {
+      console.error('[ninja-api] loopback callback error:', err);
+    }
+  }
+
+  private async completeLoginWithCode(code: string): Promise<void> {
+    if (!this.pendingLogin) {
+      throw new Error('No pending login.');
+    }
+    const pending = this.pendingLogin;
+    const response = await exchangeCode({
+      baseUrl: pending.baseUrl,
+      code,
+      codeVerifier: pending.pkce.verifier,
+      redirectUri: pending.redirectUri,
+      clientId: this.clientId,
+      ...(this.clientSecret ? { clientSecret: this.clientSecret } : {}),
+    });
+    this.baseUrl = pending.baseUrl;
+    this.baseUrlExplicit = true;
+    this.applyTokenResponse(response);
+    await this.persistTokens();
+    this.pendingLogin = null;
+  }
+
+  private async ensureTokensLoaded(): Promise<void> {
+    if (this.tokenLoadPromise) {
+      await this.tokenLoadPromise;
+      this.tokenLoadPromise = null;
+    }
+  }
+
+  private async loadStoredTokens(): Promise<void> {
+    const stored = await tokenStore.load();
+    if (!stored) return;
+    if (stored.tenantBaseUrl && !this.baseUrlExplicit) {
+      this.baseUrl = stored.tenantBaseUrl;
+      this.baseUrlExplicit = true;
+    }
+    this.refreshToken = stored.refreshToken;
+    this.accessToken = stored.accessToken;
+    this.tokenExpiry = stored.expiresAt;
+    if (stored.scope) this.scope = stored.scope;
+  }
+
+  private async persistTokens(): Promise<void> {
+    if (this.authMode !== 'authorization_code') return;
+    await tokenStore.save({
+      refreshToken: this.refreshToken,
+      accessToken: this.accessToken,
+      expiresAt: this.tokenExpiry,
+      tenantBaseUrl: this.baseUrl,
+      scope: this.scope,
+      clientId: this.clientId || null,
+    });
+  }
+
+  private applyTokenResponse(token: TokenResponse): void {
+    this.accessToken = token.access_token;
+    this.tokenExpiry = Date.now() + (token.expires_in * 1000);
+    if (token.refresh_token) {
+      this.refreshToken = token.refresh_token;
+    }
+    if (token.scope) {
+      this.scope = token.scope;
+    }
+  }
+
+  private async resolveBaseUrlForAuth(): Promise<string> {
+    if (this.baseUrl) return this.baseUrl;
+    const candidates = this.getCandidateBaseUrls();
+    const first = candidates[0];
+    if (!first) throw new Error('No candidate base URL available');
+    this.baseUrl = first;
+    return first;
+  }
+
   private async getAccessToken(): Promise<string> {
+    await this.ensureTokensLoaded();
+
+    if (this.authMode === 'authorization_code') {
+      return this.getAccessTokenAuthorizationCode();
+    }
+    return this.getAccessTokenClientCredentials();
+  }
+
+  private async getAccessTokenAuthorizationCode(): Promise<string> {
+    if (!this.clientId) {
+      throw new Error('NinjaONE API not configured - NINJA_CLIENT_ID required');
+    }
+
+    if (this.accessToken && this.tokenExpiry && Date.now() < (this.tokenExpiry - 300_000)) {
+      return this.accessToken;
+    }
+
+    if (!this.refreshToken) {
+      throw new Error('Not logged in. Call ninja_auth_login to authorize via browser.');
+    }
+
+    const base = await this.resolveBaseUrlForAuth();
+    const response = await refreshAccessToken({
+      baseUrl: base,
+      refreshToken: this.refreshToken,
+      clientId: this.clientId,
+      ...(this.clientSecret ? { clientSecret: this.clientSecret } : {}),
+      scope: this.scope,
+    });
+    this.applyTokenResponse(response);
+    await this.persistTokens();
+    return this.accessToken!;
+  }
+
+  private async getAccessTokenClientCredentials(): Promise<string> {
     if (!this.isConfigured) {
       throw new Error('NinjaONE API not configured - NINJA_CLIENT_ID and NINJA_CLIENT_SECRET required');
     }
@@ -97,13 +390,22 @@ export class NinjaOneAPI {
     return this.accessToken!;
   }
 
+  public requireAuthorizationCodeMode(operation: string): void {
+    if (this.authMode !== 'authorization_code') {
+      throw new Error(
+        `${operation} requires authorization_code auth flow. ` +
+        `Set NINJA_AUTH_MODE=authorization_code and run ninja_auth_login.`
+      );
+    }
+  }
+
   private async requestToken(baseUrl: string): Promise<{ access_token: string; expires_in: number }> {
     const tokenUrl = `${baseUrl}/ws/oauth/token`;
     const body = new URLSearchParams({
       grant_type: 'client_credentials',
       client_id: this.clientId,
       client_secret: this.clientSecret,
-      scope: 'monitoring management control'
+      scope: this.scope || NinjaOneAPI.DEFAULT_CC_SCOPE,
     });
 
     const response = await fetch(tokenUrl, {
@@ -198,6 +500,12 @@ export class NinjaOneAPI {
     this.baseUrlExplicit = true;
     this.accessToken = null;
     this.tokenExpiry = null;
+    if (this.authMode === 'authorization_code') {
+      // Refresh tokens are tenant-bound; re-login required after switching tenant.
+      this.refreshToken = null;
+      this.pendingLogin = null;
+      void this.persistTokens();
+    }
   }
 
   private buildQuery(params: Record<string, any>): string {
@@ -657,5 +965,143 @@ export class NinjaOneAPI {
    */
   async getDeviceSoftware(id: number): Promise<any> {
     return this.makeRequest(`/v2/device/${id}/software`);
+  }
+
+  // Ticketing
+
+  async getTickets(filter?: string, pageSize?: number, cursor?: string, sortBy?: string): Promise<any> {
+    return this.makeRequest(`/v2/ticketing/trigger/tickets${this.buildQuery({ filter, pageSize, cursor, sortBy })}`);
+  }
+
+  async getTicket(ticketId: number): Promise<any> {
+    return this.makeRequest(`/v2/ticketing/ticket/${ticketId}`);
+  }
+
+  async createTicket(payload: Record<string, unknown>): Promise<any> {
+    return this.makeRequest('/v2/ticketing/ticket', 'POST', payload);
+  }
+
+  async updateTicket(ticketId: number, payload: Record<string, unknown>): Promise<any> {
+    return this.makeRequest(`/v2/ticketing/ticket/${ticketId}`, 'PUT', payload);
+  }
+
+  async getTicketLogEntries(ticketId: number): Promise<any> {
+    return this.makeRequest(`/v2/ticketing/ticket/${ticketId}/log-entry`);
+  }
+
+  async addTicketLogEntry(ticketId: number, payload: Record<string, unknown>): Promise<any> {
+    return this.makeRequest(`/v2/ticketing/ticket/${ticketId}/log-entry`, 'POST', payload);
+  }
+
+  async getTicketingAttributes(): Promise<any> {
+    return this.makeRequest('/v2/ticketing/attributes');
+  }
+
+  async getTicketingContacts(pageSize?: number, cursor?: string, searchCriteria?: string): Promise<any> {
+    return this.makeRequest(`/v2/ticketing/contact/contacts${this.buildQuery({ pageSize, cursor, searchCriteria })}`);
+  }
+
+  // Scripts (authorization_code required)
+
+  async getDeviceScriptingOptions(id: number): Promise<any> {
+    this.requireAuthorizationCodeMode('run_device_script / get_device_scripting_options');
+    return this.makeRequest(`/v2/device/${id}/scripting/options`);
+  }
+
+  async runDeviceScript(id: number, payload: Record<string, unknown>): Promise<any> {
+    this.requireAuthorizationCodeMode('run_device_script');
+    return this.makeRequest(`/v2/device/${id}/script/run`, 'POST', payload);
+  }
+
+  async getJobStatus(jobUid: string): Promise<any> {
+    return this.makeRequest(`/v2/job/${encodeURIComponent(jobUid)}`);
+  }
+
+  // NinjaOne Documentation
+
+  async getDocumentTemplates(): Promise<any> {
+    return this.makeRequest('/v2/document-templates');
+  }
+
+  async getDocumentTemplate(id: number): Promise<any> {
+    return this.makeRequest(`/v2/document-template/${id}`);
+  }
+
+  async createDocumentTemplate(payload: Record<string, unknown>): Promise<any> {
+    return this.makeRequest('/v2/document-templates', 'POST', payload);
+  }
+
+  async updateDocumentTemplate(id: number, payload: Record<string, unknown>): Promise<any> {
+    return this.makeRequest(`/v2/document-template/${id}`, 'PATCH', payload);
+  }
+
+  async getOrganizationDocuments(organizationId: number): Promise<any> {
+    return this.makeRequest(`/v2/organization/${organizationId}/documents`);
+  }
+
+  async createOrganizationDocument(organizationId: number, payload: Record<string, unknown>): Promise<any> {
+    return this.makeRequest(`/v2/organization/${organizationId}/documents`, 'POST', payload);
+  }
+
+  async updateOrganizationDocument(
+    organizationId: number,
+    documentId: number,
+    payload: Record<string, unknown>
+  ): Promise<any> {
+    return this.makeRequest(`/v2/organization/${organizationId}/document/${documentId}`, 'PATCH', payload);
+  }
+
+  // Custom fields per device
+
+  async getDeviceCustomFields(id: number): Promise<any> {
+    return this.makeRequest(`/v2/device/${id}/custom-fields`);
+  }
+
+  async updateDeviceCustomFields(id: number, fields: Record<string, unknown>): Promise<any> {
+    return this.makeRequest(`/v2/device/${id}/custom-fields`, 'PATCH', fields);
+  }
+
+  // Webhooks
+
+  async setWebhook(payload: Record<string, unknown>): Promise<any> {
+    return this.makeRequest('/v2/webhook', 'PUT', payload);
+  }
+
+  async deleteWebhook(): Promise<any> {
+    return this.makeRequest('/v2/webhook', 'DELETE');
+  }
+
+  // Attachments (binary)
+
+  async getAttachment(id: string): Promise<{ contentType: string; base64: string; size: number }> {
+    const token = await this.getAccessToken();
+    const base = this.baseUrl || NinjaOneAPI.DEFAULT_CANDIDATES[0]!;
+    const response = await fetch(`${base}/v2/attachment/${encodeURIComponent(id)}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept': '*/*',
+      },
+    });
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new Error(`API request failed: ${response.status} ${response.statusText} - ${text}`);
+    }
+    const buf = Buffer.from(await response.arrayBuffer());
+    return {
+      contentType: response.headers.get('content-type') || 'application/octet-stream',
+      base64: buf.toString('base64'),
+      size: buf.byteLength,
+    };
+  }
+
+  // Backup
+
+  async queryBackupJobs(df?: string, cursor?: string, pageSize?: number, status?: string, planType?: string): Promise<any> {
+    return this.makeRequest(`/v2/queries/backup/jobs${this.buildQuery({ df, cursor, pageSize, status, planType })}`);
+  }
+
+  async queryBackupIntegrityChecks(df?: string, cursor?: string, pageSize?: number): Promise<any> {
+    return this.makeRequest(`/v2/queries/backup/integrity${this.buildQuery({ df, cursor, pageSize })}`);
   }
 }

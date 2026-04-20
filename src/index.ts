@@ -860,6 +860,274 @@ const TOOLS = [
         pageSize: { type: 'number', description: 'Number of results per page (default: 50)' }
       }
     }
+  },
+  {
+    name: 'query_backup_jobs',
+    description: 'Query backup jobs with optional status/plan filters',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        df: { type: 'string' },
+        cursor: { type: 'string' },
+        pageSize: { type: 'number' },
+        status: { type: 'string', description: 'Optional job status filter (e.g. SUCCESS, FAILED)' },
+        planType: { type: 'string', description: 'Optional backup plan type filter' }
+      }
+    }
+  },
+  {
+    name: 'query_backup_integrity',
+    description: 'Query backup integrity check results',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        df: { type: 'string' },
+        cursor: { type: 'string' },
+        pageSize: { type: 'number' }
+      }
+    }
+  },
+
+  // Auth tools (authorization_code flow)
+  {
+    name: 'ninja_auth_status',
+    description: 'Show active auth mode, token status, tenant base URL, and refresh-token availability',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'ninja_auth_login',
+    description: 'Start an authorization_code OAuth login (opens browser via loopback; falls back to manual paste).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        manual: {
+          type: 'boolean',
+          description: 'If true, skip loopback and only return the authorize URL for manual paste.'
+        }
+      }
+    }
+  },
+  {
+    name: 'ninja_auth_paste_redirect',
+    description: 'Complete an in-progress authorization_code login by pasting the full redirect URL (with ?code=&state=).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'Full redirect URL returned by the NinjaOne authorize endpoint' }
+      },
+      required: ['url']
+    }
+  },
+  {
+    name: 'ninja_auth_logout',
+    description: 'Clear stored access and refresh tokens for the authorization_code flow.',
+    inputSchema: { type: 'object', properties: {} }
+  },
+
+  // Ticketing
+  {
+    name: 'get_tickets',
+    description: 'List tickets using the NinjaOne ticket filter API',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        filter: { type: 'string', description: 'Ticket filter expression' },
+        pageSize: { type: 'number' },
+        cursor: { type: 'string' },
+        sortBy: { type: 'string' }
+      }
+    }
+  },
+  {
+    name: 'get_ticket',
+    description: 'Get a single ticket by ID',
+    inputSchema: { type: 'object', properties: { ticketId: { type: 'number' } }, required: ['ticketId'] }
+  },
+  {
+    name: 'create_ticket',
+    description: 'Create a new ticket. Payload fields depend on tenant ticket form (subject, description, priority, clientId, etc.).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        payload: { type: 'object', description: 'Ticket creation payload as per NinjaOne Ticketing API', additionalProperties: true }
+      },
+      required: ['payload']
+    }
+  },
+  {
+    name: 'update_ticket',
+    description: 'Update an existing ticket',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ticketId: { type: 'number' },
+        payload: { type: 'object', additionalProperties: true }
+      },
+      required: ['ticketId', 'payload']
+    }
+  },
+  {
+    name: 'get_ticket_log_entries',
+    description: 'Retrieve log entries (comments/activity) for a ticket',
+    inputSchema: { type: 'object', properties: { ticketId: { type: 'number' } }, required: ['ticketId'] }
+  },
+  {
+    name: 'add_ticket_log_entry',
+    description: 'Add a log entry (comment/public or internal) to a ticket',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ticketId: { type: 'number' },
+        payload: { type: 'object', additionalProperties: true, description: 'Log entry payload (body, type, publicEntry, etc.)' }
+      },
+      required: ['ticketId', 'payload']
+    }
+  },
+  {
+    name: 'get_ticketing_attributes',
+    description: 'Get ticket attribute metadata (statuses, priorities, custom fields)',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'get_ticketing_contacts',
+    description: 'List ticketing contacts',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pageSize: { type: 'number' },
+        cursor: { type: 'string' },
+        searchCriteria: { type: 'string' }
+      }
+    }
+  },
+
+  // Scripts (authorization_code required)
+  {
+    name: 'get_device_scripting_options',
+    description: 'List scripts/actions available to run on a device (requires authorization_code flow)',
+    inputSchema: { type: 'object', properties: { id: { type: 'number' } }, required: ['id'] }
+  },
+  {
+    name: 'run_device_script',
+    description: 'Run a script on a device (requires authorization_code flow). Payload: { type, uid|id, parameters?, runAs? }.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number' },
+        payload: { type: 'object', additionalProperties: true }
+      },
+      required: ['id', 'payload']
+    }
+  },
+  {
+    name: 'get_job_status',
+    description: 'Get status of a script/job by UID',
+    inputSchema: { type: 'object', properties: { jobUid: { type: 'string' } }, required: ['jobUid'] }
+  },
+
+  // Documentation
+  {
+    name: 'get_document_templates',
+    description: 'List NinjaOne Documentation templates',
+    inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'get_document_template',
+    description: 'Get a specific documentation template',
+    inputSchema: { type: 'object', properties: { id: { type: 'number' } }, required: ['id'] }
+  },
+  {
+    name: 'create_document_template',
+    description: 'Create a documentation template',
+    inputSchema: {
+      type: 'object',
+      properties: { payload: { type: 'object', additionalProperties: true } },
+      required: ['payload']
+    }
+  },
+  {
+    name: 'update_document_template',
+    description: 'Update a documentation template',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number' },
+        payload: { type: 'object', additionalProperties: true }
+      },
+      required: ['id', 'payload']
+    }
+  },
+  {
+    name: 'get_organization_documents',
+    description: 'List NinjaOne Documentation documents scoped to an organization',
+    inputSchema: { type: 'object', properties: { organizationId: { type: 'number' } }, required: ['organizationId'] }
+  },
+  {
+    name: 'create_organization_document',
+    description: 'Create a documentation document under an organization',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        organizationId: { type: 'number' },
+        payload: { type: 'object', additionalProperties: true }
+      },
+      required: ['organizationId', 'payload']
+    }
+  },
+  {
+    name: 'update_organization_document',
+    description: 'Update a documentation document under an organization',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        organizationId: { type: 'number' },
+        documentId: { type: 'number' },
+        payload: { type: 'object', additionalProperties: true }
+      },
+      required: ['organizationId', 'documentId', 'payload']
+    }
+  },
+
+  // Device custom fields
+  {
+    name: 'get_device_custom_fields',
+    description: 'Retrieve custom field values for a device',
+    inputSchema: { type: 'object', properties: { id: { type: 'number' } }, required: ['id'] }
+  },
+  {
+    name: 'update_device_custom_fields',
+    description: 'Update custom field values for a device (object of { fieldName: value })',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number' },
+        fields: { type: 'object', additionalProperties: true }
+      },
+      required: ['id', 'fields']
+    }
+  },
+
+  // Webhooks
+  {
+    name: 'set_webhook',
+    description: 'Create or update the tenant webhook configuration',
+    inputSchema: {
+      type: 'object',
+      properties: { payload: { type: 'object', additionalProperties: true } },
+      required: ['payload']
+    }
+  },
+  {
+    name: 'delete_webhook',
+    description: 'Remove the tenant webhook configuration',
+    inputSchema: { type: 'object', properties: {} }
+  },
+
+  // Attachments
+  {
+    name: 'get_attachment',
+    description: 'Fetch an attachment by ID. Returns base64-encoded bytes plus content-type and size.',
+    inputSchema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] }
   }
 ];
 
@@ -876,7 +1144,7 @@ class NinjaOneMCPServer {
       this.server = new Server(
         {
           name: 'ninjaone-mcp-server',
-          version: '1.2.0',
+          version: '1.3.0',
         },
         {
           capabilities: {
@@ -1206,6 +1474,86 @@ class NinjaOneMCPServer {
         return this.api.resetDevicePolicyOverrides(args.id);
       case 'get_policies':
         return this.api.getPolicies(args.templateOnly);
+
+      // Backup (new)
+      case 'query_backup_jobs':
+        return this.api.queryBackupJobs(args.df, args.cursor, args.pageSize, args.status, args.planType);
+      case 'query_backup_integrity':
+        return this.api.queryBackupIntegrityChecks(args.df, args.cursor, args.pageSize);
+
+      // Auth
+      case 'ninja_auth_status':
+        return this.api.getAuthStatus();
+      case 'ninja_auth_login':
+        return this.api.startLogin(args.manual !== true);
+      case 'ninja_auth_paste_redirect': {
+        if (typeof args.url !== 'string' || !args.url) {
+          throw new McpError(ErrorCode.InvalidParams, 'url is required');
+        }
+        await this.api.completeLoginFromRedirect(args.url);
+        return { success: true, message: 'Login completed and tokens stored.' };
+      }
+      case 'ninja_auth_logout':
+        await this.api.logout();
+        return { success: true, message: 'Tokens cleared.' };
+
+      // Ticketing
+      case 'get_tickets':
+        return this.api.getTickets(args.filter, args.pageSize, args.cursor, args.sortBy);
+      case 'get_ticket':
+        return this.api.getTicket(args.ticketId);
+      case 'create_ticket':
+        return this.api.createTicket(args.payload);
+      case 'update_ticket':
+        return this.api.updateTicket(args.ticketId, args.payload);
+      case 'get_ticket_log_entries':
+        return this.api.getTicketLogEntries(args.ticketId);
+      case 'add_ticket_log_entry':
+        return this.api.addTicketLogEntry(args.ticketId, args.payload);
+      case 'get_ticketing_attributes':
+        return this.api.getTicketingAttributes();
+      case 'get_ticketing_contacts':
+        return this.api.getTicketingContacts(args.pageSize, args.cursor, args.searchCriteria);
+
+      // Scripts
+      case 'get_device_scripting_options':
+        return this.api.getDeviceScriptingOptions(args.id);
+      case 'run_device_script':
+        return this.api.runDeviceScript(args.id, args.payload);
+      case 'get_job_status':
+        return this.api.getJobStatus(args.jobUid);
+
+      // Documentation
+      case 'get_document_templates':
+        return this.api.getDocumentTemplates();
+      case 'get_document_template':
+        return this.api.getDocumentTemplate(args.id);
+      case 'create_document_template':
+        return this.api.createDocumentTemplate(args.payload);
+      case 'update_document_template':
+        return this.api.updateDocumentTemplate(args.id, args.payload);
+      case 'get_organization_documents':
+        return this.api.getOrganizationDocuments(args.organizationId);
+      case 'create_organization_document':
+        return this.api.createOrganizationDocument(args.organizationId, args.payload);
+      case 'update_organization_document':
+        return this.api.updateOrganizationDocument(args.organizationId, args.documentId, args.payload);
+
+      // Device custom fields
+      case 'get_device_custom_fields':
+        return this.api.getDeviceCustomFields(args.id);
+      case 'update_device_custom_fields':
+        return this.api.updateDeviceCustomFields(args.id, args.fields);
+
+      // Webhooks
+      case 'set_webhook':
+        return this.api.setWebhook(args.payload);
+      case 'delete_webhook':
+        return this.api.deleteWebhook();
+
+      // Attachments
+      case 'get_attachment':
+        return this.api.getAttachment(args.id);
 
       default:
         throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);

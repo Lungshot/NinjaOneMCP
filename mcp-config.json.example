@@ -14,6 +14,13 @@
         "NINJA_CLIENT_ID": "<your_client_id>",
         "NINJA_CLIENT_SECRET": "<your_client_secret>",
         "NINJA_BASE_URL": "https://eu.ninjarmm.com",
+
+        "// Auth": "Use client_credentials (default) or authorization_code for web-auth / scripts",
+        "NINJA_AUTH_MODE": "client_credentials",
+        "NINJA_OAUTH_REDIRECT_URI": "http://localhost:8765/callback",
+        "NINJA_OAUTH_PORT": "8765",
+        "NINJA_OAUTH_SCOPES": "monitoring management control offline_access",
+
         "MCP_MODE": "stdio",
         "HTTP_PORT": "3000",
         "SSE_PORT": "3001",

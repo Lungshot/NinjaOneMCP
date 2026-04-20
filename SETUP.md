@@ -130,6 +130,49 @@ When running through Claude Desktop or other MCP clients:
 4. ❌ Forgetting to restart Claude after config changes
 5. ❌ Missing quotes around string values in JSON config
 
+## Authorization Code (browser login) flow
+
+Use this flow when you need endpoints that must run in a user context
+(most notably `run_device_script`).
+
+1. In NinjaOne admin (**Apps → API → Client App IDs**), either register a new
+   application with **Authorization Code** grant enabled or enable it on an
+   existing application.
+2. Add a **redirect URI** that matches your MCP config. The default is
+   `http://localhost:8765/callback` — if the port is in use, pick another and
+   set both `NINJA_OAUTH_PORT` and `NINJA_OAUTH_REDIRECT_URI` accordingly.
+3. Configure the MCP client with the new env vars:
+   ```json
+   {
+     "mcpServers": {
+       "ninjaone": {
+         "command": "node",
+         "args": ["/path/to/NinjaOneMCP/dist/index.js"],
+         "env": {
+           "NINJA_AUTH_MODE": "authorization_code",
+           "NINJA_CLIENT_ID": "<client_id>",
+           "NINJA_CLIENT_SECRET": "<client_secret_if_confidential>",
+           "NINJA_BASE_URL": "https://app.ninjarmm.com",
+           "NINJA_OAUTH_REDIRECT_URI": "http://localhost:8765/callback",
+           "NINJA_OAUTH_PORT": "8765",
+           "NINJA_OAUTH_SCOPES": "monitoring management control offline_access",
+           "MCP_MODE": "stdio"
+         }
+       }
+     }
+   }
+   ```
+4. Restart the MCP client.
+5. In a chat, invoke the `ninja_auth_login` tool. Your browser opens, you sign
+   in, and the MCP captures the code via the loopback callback. Tokens are
+   written to `~/.ninjaone-mcp/tokens.json` with `0600` permissions. Set
+   `NINJA_TOKEN_DIR` to override this path.
+6. Headless / blocked port: call `ninja_auth_login` with `{ "manual": true }`,
+   open the returned `authorizeUrl` in any browser, then paste the full
+   redirected URL into `ninja_auth_paste_redirect`.
+7. `ninja_auth_status` reports mode, token expiry, and whether a refresh token
+   is stored. `ninja_auth_logout` clears the token file.
+
 ## Testing Your Setup
 
 ### Test Local Setup
