@@ -232,7 +232,7 @@ The NinjaOne Public API has the following known limitations:
 
 ### Organizations & Locations
 - **Delete Organization**: Organizations can only be deleted via the NinjaOne dashboard
-- **Delete Location**: Locations can only be deleted via the NinjaOne dashboard  
+- **Delete Location**: Locations can only be deleted via the NinjaOne dashboard
 - **Update nodeApprovalMode**: This setting is read-only after organization creation
 
 ### End Users
@@ -437,6 +437,7 @@ npm test
 - Verify your OAuth client has required scopes (monitoring, management, control)
 - Check organization/location access permissions
 - `403 user_context_required` on ticket writes / `run_device_script` → run `npm run auth` to bootstrap the user-context flow
+- `access denied` / credential errors when running scripts → ensure `runAs` is lowercase `"system"` (not uppercase `"SYSTEM"`); uppercase can cause credential access denials, especially on Linux devices
 
 
 **Transport Issues**

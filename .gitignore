@@ -19,3 +19,6 @@ Thumbs.db
 
 # Claude Code local workspace settings
 .claude/
+
+# helper shell scripts
+*.sh

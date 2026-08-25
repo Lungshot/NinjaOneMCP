@@ -139,7 +139,20 @@ const TOOLS = [
       type: 'object',
       properties: {
         id: { type: 'number', description: 'Device ID' },
-        pageSize: { type: 'number', description: 'Number of results per page' }
+        pageSize: { type: 'number', description: 'Number of results per page' },
+        type: { type: 'string', description: 'Activity type filter (e.g., AUTOMATION, DEVICE, ALERT, PATCHING, TICKETING)' }
+      },
+      required: ['id']
+    }
+  },
+  {
+    name: 'get_device_automation_activities',
+    description: 'Get recent automation/script activities for a device (filtered, token-efficient — defaults to 10 results)',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'Device ID' },
+        pageSize: { type: 'number', description: 'Number of results (default: 10)' }
       },
       required: ['id']
     }
@@ -1145,7 +1158,7 @@ const TOOLS = [
         deviceId: { type: 'number', description: 'Device ID' },
         scriptId: { type: 'number', description: 'Script/automation ID from NinjaOne' },
         type: { type: 'string', enum: ['ACTION', 'SCRIPT'], description: 'Script type (default: SCRIPT)' },
-        runAs: { type: 'string', description: 'Execution context (default: SYSTEM)' },
+        runAs: { type: 'string', description: 'Execution context. Use lowercase "system" (default) to avoid access denied errors — uppercase "SYSTEM" can cause credential access denials, especially on Linux devices.' },
         parameters: { type: 'string', description: 'Script parameters string' },
         confirm: { type: 'boolean', description: 'Set to true to execute. Default false (dry-run).' }
       },
@@ -1190,6 +1203,51 @@ const TOOLS = [
     name: 'get_pending_devices',
     description: 'List all devices awaiting approval',
     inputSchema: { type: 'object', properties: {} }
+  },
+  {
+    name: 'device_filter_help',
+    description: 'Get help on NinjaOne Device Filter (df) syntax',
+    inputSchema: { type: 'object', properties: {} }
+  },
+
+  // Phase 5 — High-level script execution & job tracking
+
+  {
+    name: 'execute_script',
+    description: 'Execute an automation script by name with automatic tracking. Resolves script name → ID, executes, and polls until completion. Set confirm=true to execute; default is dry-run.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        device_id: { type: 'number', description: 'Device ID' },
+        script: { type: 'string', description: 'Script name (not numeric ID). The MCP will resolve the name to an ID automatically.' },
+        parameters: { type: 'string', description: 'Script parameters string (max 30,000 chars, max 50 params)' },
+        run_as: { type: 'string', description: 'Execution context. Use lowercase "system" (default) to avoid access denied errors — uppercase "SYSTEM" can cause credential access denials, especially on Linux devices.' },
+        confirm: { type: 'boolean', description: 'Set to true to execute. Default false (dry-run).' }
+      },
+      required: ['device_id', 'script']
+    }
+  },
+  {
+    name: 'get_active_jobs',
+    description: 'Get active jobs for a device — useful for diagnostics and monitoring script execution',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        deviceId: { type: 'number', description: 'Device ID' }
+      },
+      required: ['deviceId']
+    }
+  },
+  {
+    name: 'get_device_scripting_options',
+    description: 'Get available scripting options (scripts and actions) for a specific device',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        deviceId: { type: 'number', description: 'Device ID' }
+      },
+      required: ['deviceId']
+    }
   }
 ];
 
@@ -1237,7 +1295,7 @@ class NinjaOneMCPServer {
           throw error;
         }
         throw new McpError(
-          ErrorCode.InternalError, 
+          ErrorCode.InternalError,
           `Tool execution failed: ${error instanceof Error ? error.message : String(error)}`
         );
       }
@@ -1285,7 +1343,9 @@ class NinjaOneMCPServer {
         case 'get_device_software':
           return this.result(await this.api.getDeviceSoftware(args.id));
         case 'get_device_activities':
-          return this.result(await this.api.getDeviceActivities(args.id, args.pageSize));
+          return this.result(await this.api.getDeviceActivities(args.id, args.pageSize, undefined, args.type));
+        case 'get_device_automation_activities':
+          return this.result(await this.api.getDeviceActivities(args.id, args.pageSize || 10, undefined, 'AUTOMATION'));
         case 'search_devices_by_name':
           return this.result(await this.searchDevicesByName(args.name, args.limit || 10));
         case 'find_windows11_devices':
@@ -1685,12 +1745,12 @@ class NinjaOneMCPServer {
         case 'run_device_script': {
           if (!args.confirm) {
             const device = await this.api.getDevice(args.deviceId);
-            return this.dryRun(`Would run script id=${args.scriptId} on device id=${args.deviceId} (${device.systemName || device.displayName || 'unknown'}).\nType: ${args.type || 'SCRIPT'}\nRun as: ${args.runAs || 'SYSTEM'}\nParameters: ${args.parameters || 'none'}`);
+            return this.dryRun(`Would run script id=${args.scriptId} on device id=${args.deviceId} (${device.systemName || device.displayName || 'unknown'}).\nType: ${args.type || 'SCRIPT'}\nRun as: ${args.runAs || 'system'}\nParameters: ${args.parameters || 'none'}`);
           }
           return this.result(await this.api.runDeviceScript(args.deviceId, {
             type: args.type || 'SCRIPT',
             id: args.scriptId,
-            runAs: args.runAs || 'SYSTEM',
+            runAs: args.runAs || 'system',
             parameters: args.parameters
           }));
         }
@@ -1711,6 +1771,143 @@ class NinjaOneMCPServer {
         // ── Phase 4: Device approval ──
         case 'get_pending_devices':
           return this.result(await this.api.getPendingDevices());
+
+        case 'device_filter_help':
+          return this.result(
+`NinjaOne Device Filter (df) Syntax
+
+The df parameter uses NinjaOne Device Filter expressions.
+Do not use API property names such as:
+
+- organizationId
+- deviceId
+- systemName
+
+Instead use NinjaOne filter keywords.
+
+Common mappings:
+
+Organization -> organization
+Device -> id
+Online devices -> online
+Offline devices -> offline
+Status -> status
+
+Examples:
+
+organization = 123
+
+organization = 123 and offline
+
+organization in (123,456,789)
+
+id = 4711
+
+Agent behavior:
+
+When the user specifies an organization name:
+
+1. Call get_organizations
+2. Resolve the organization name to an organization ID
+3. Build a df filter using organization = <id>
+
+Never use:
+
+organizationId = 123
+deviceId = 4711
+
+Always use official NinjaOne Device Filter syntax.`
+          );
+
+        // ── Phase 5: High-level script execution & job tracking ──
+        case 'execute_script': {
+          const deviceId = args.device_id;
+          const scriptName = args.script;
+          const runAs = args.run_as || 'system';
+          const parameters = args.parameters || '';
+
+          // Step 1: Resolve script name → ID
+          const resolution = await this.api.findScriptByName(scriptName);
+          if (!resolution.found) {
+            if (resolution.candidates && resolution.candidates.length > 0) {
+              return this.result({
+                resolved: false,
+                note: resolution.note,
+                candidates: resolution.candidates
+              });
+            }
+            return this.result({ resolved: false, note: resolution.note });
+          }
+          const script = resolution.script;
+
+          // Dry run
+          if (!args.confirm) {
+            const device = await this.api.getDevice(deviceId);
+            return this.dryRun(
+              `Would execute script "${script.name}" (id=${script.id}) on device id=${deviceId} (${device.systemName || device.displayName || 'unknown'}).\n` +
+              `Run as: ${runAs}\n` +
+              `Parameters: ${parameters || 'none'}\n` +
+              `Language: ${script.language || 'unknown'}\n` +
+              `OS: ${script.operatingSystem || 'unknown'}`
+            );
+          }
+
+          // Step 2: Execute with tracking
+          const device = await this.api.getDevice(deviceId);
+          const jobSnapshot = await this.api.getDeviceJobs(deviceId).catch(() => null);
+          const existingJobIds = new Set(
+            (jobSnapshot?.jobs || jobSnapshot?.results || []).map((j: any) => j.id || j.jobId)
+          );
+
+          const runResult = await this.api.runDeviceScript(deviceId, {
+            type: 'SCRIPT',
+            id: script.id,
+            runAs,
+            parameters
+          });
+
+          // Step 3: Correlate new job (diff from before-execution snapshot)
+          const afterJobs = await this.api.getDeviceJobs(deviceId).catch(() => null);
+          const afterJobList = afterJobs?.jobs || afterJobs?.results || [];
+          const newJobs = afterJobList.filter((j: any) => {
+            const jid = j.id || j.jobId;
+            return jid && !existingJobIds.has(jid);
+          });
+
+          // Step 4: Track if we have an activity ID
+          const activityId = runResult?.activityId || runResult?.id || runResult?.activity?.id;
+          let tracking: any = null;
+          if (activityId) {
+            const timeoutMs = parseInt(process.env.SCRIPT_POLL_TIMEOUT_MS || '120000', 10);
+            tracking = await this.api.waitForScriptResult(deviceId, activityId, { timeoutMs, pollIntervalMs: 3000 });
+          }
+
+          return this.result({
+            accepted: true,
+            script: script.name,
+            scriptId: script.id,
+            deviceId,
+            deviceName: device.systemName || device.displayName || 'unknown',
+            runAs,
+            parameters: parameters || undefined,
+            activityId: activityId || undefined,
+            jobCorrelation: {
+              beforeCount: existingJobIds.size,
+              afterCount: afterJobList.length,
+              newJobsDetected: newJobs.length,
+              newJobs: newJobs.slice(0, 5).map((j: any) => ({
+                id: j.id || j.jobId,
+                name: j.name || j.description,
+                status: j.status
+              }))
+            },
+            trackingResult: tracking || { note: 'No activity ID returned; tracking unavailable.' }
+          });
+        }
+        case 'get_active_jobs':
+          return this.result(await this.api.getDeviceJobs(args.deviceId));
+        case 'get_device_scripting_options':
+          return this.result(await this.api.getDeviceScriptingOptions(args.deviceId));
 
         default:
           throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${name}`);
